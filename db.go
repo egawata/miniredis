@@ -235,8 +235,8 @@ func (db *RedisDB) setAdd(k string, elems ...string) int {
 	for _, e := range elems {
 		if _, ok := s[e]; !ok {
 			added++
+			s[e] = struct{}{}
 		}
-		s[e] = struct{}{}
 	}
 	db.setKeys[k] = s
 	db.keyVersion[k]++
