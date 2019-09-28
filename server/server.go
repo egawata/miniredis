@@ -52,6 +52,9 @@ func NewServer(addr string) (*Server, error) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		// l.Accept() が失敗するとこの goroutine が終了する。
+		// Close 時に l(net.Listner) が close され、その後 Accept() は失敗するはずなので
+		// それで抜ける、ということらしい。
 		s.serve(l)
 	}()
 	return &s, nil
@@ -64,14 +67,21 @@ func (s *Server) serve(l net.Listener) {
 			return
 		}
 		s.ServeConn(conn)
+
+		// もしかしたら、ここで s.closed みたいなフラグを見て
+		// true ならこのループを抜ける、という処理のほうが優しいのかもしれない
+		// ただ、優しさが求められるのは conn だけであって、listener は
+		// この方法でも十分なのかもしれない。
 	}
 }
 
 // ServeConn handles a net.Conn. Nice with net.Pipe()
 func (s *Server) ServeConn(conn net.Conn) {
+	// wg.Add(1) -> goroutine 開始 -> その中ではじめに defer wg.Done() が定石
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		// conn.Close() も忘れないこと
 		defer conn.Close()
 		s.mu.Lock()
 		s.peers[conn] = struct{}{}
@@ -104,15 +114,20 @@ func (s *Server) Close() {
 		s.l.Close()
 	}
 	s.l = nil
+	// s.peers の key は net.Conn
 	for c := range s.peers {
 		c.Close()
 	}
 	s.mu.Unlock()
+
+	// listener, conn ごとに s.wg.Add(1)している
+	// これらの処理がすべて終了するまで待つ
 	s.wg.Wait()
 }
 
 // Register a command. It can't have been registered before. Safe to call on a
 // running server.
+// ある cmd に対して、Server 側がどう処理すべきかを呼び出し側から渡せる。
 func (s *Server) Register(cmd string, f Cmd) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,6 +144,8 @@ func (s *Server) servePeer(c net.Conn) {
 	peer := &Peer{
 		w: bufio.NewWriter(c),
 	}
+	// peer.onDisconnect に、終了時に実行したい function を登録しておくと
+	// すべて実行される
 	defer func() {
 		for _, f := range peer.onDisconnect {
 			f()
@@ -136,6 +153,8 @@ func (s *Server) servePeer(c net.Conn) {
 	}()
 
 	for {
+		// 終端まで読み込んだ場合は err = io.EOF となる。
+		// この場合は処理を終了
 		args, err := readArray(r)
 		if err != nil {
 			return
@@ -154,6 +173,8 @@ func (s *Server) servePeer(c net.Conn) {
 func (s *Server) dispatch(c *Peer, args []string) {
 	cmd, args := args[0], args[1:]
 	cmdUp := strings.ToUpper(cmd)
+	// struct 上の、変更可能性のある field にアクセスする場合は
+	// 前後で Lock をかける
 	s.mu.Lock()
 	cb, ok := s.cmds[cmdUp]
 	s.mu.Unlock()
@@ -200,6 +221,8 @@ type Peer struct {
 }
 
 // Flush the write buffer. Called automatically after every redis command
+// bufio.Writer は出力結果を一時的にためて、Flush で io.Writer に書き出す。
+// 適当なタイミングでFlush()する必要がある。
 func (c *Peer) Flush() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -207,6 +230,11 @@ func (c *Peer) Flush() {
 }
 
 // Close the client connection after the current command is done.
+// Close()が呼ばれた時点で Close してしまうのではなく、とりあえず
+// フラグだけ立てておく。
+// conn を処理中の for loop 内で、リクエスト処理完了ごとにこのフラグの値を調べ、
+// true だったら実際に conn.Close() する
+// これにより、リクエスト処理中にいきなりコネクションを切ることがなくなる。
 func (c *Peer) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -228,6 +256,9 @@ func (c *Peer) Block(f func(*Writer)) {
 
 // WriteError writes a redis 'Error'
 func (c *Peer) WriteError(e string) {
+	// c.w にアクセスするので、出力の前後に Lock をかけなければならない
+	// 冗長になるので、Lock をかける部分を Block にまかせ、
+	// func をまるごと渡すという手法が使える
 	c.Block(func(w *Writer) {
 		w.WriteError(e)
 	})

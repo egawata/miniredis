@@ -7,6 +7,7 @@ import (
 
 // assert fails the test if the condition is false.
 func assert(tb testing.TB, condition bool, msg string, v ...interface{}) {
+	// tb.Helper() を入れておくと、エラーの出力が呼び出し元のものになる。
 	tb.Helper()
 	if !condition {
 		tb.Errorf(msg, v...)

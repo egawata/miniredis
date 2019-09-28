@@ -166,6 +166,8 @@ func (m *Miniredis) Close() {
 		m.Unlock()
 		return
 	}
+	// srv.Close() の中の処理が m を lock する可能性がある
+	// 一旦別の変数に退避しておけば OK
 	srv := m.srv
 	m.srv = nil
 	m.Unlock()

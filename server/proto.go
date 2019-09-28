@@ -11,6 +11,8 @@ var ErrProtocol = errors.New("invalid request")
 
 // client always sends arrays with bulk strings
 func readArray(rd *bufio.Reader) ([]string, error) {
+	// bufio.ReadString は、delimiter を発見する前に終端に達した場合は
+	// 終端までの文字列と、err として io.EOF を返す。
 	line, err := rd.ReadString('\n')
 	if err != nil {
 		return nil, err
